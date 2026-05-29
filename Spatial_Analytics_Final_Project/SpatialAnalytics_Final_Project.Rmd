@@ -1,0 +1,565 @@
+---
+title: "Spatial Relations Between DF voters and Non-Western Immigrant Populations"
+author: "Ditte Hyldgaard Danielsen"
+date: "2026-06-03"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+    theme: flatly
+    highlight: tango
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 8,
+  fig.height = 6
+)
+```
+
+# Introduction
+
+This project investigates the spatial relationship between support for the Danish People’s Party (DF) and the proportion of non-western immigrants across Danish municipalities.
+
+The project combines choropleth mapping, correlation analysis, bivariate visualization, and local spatial autocorrelation (LISA) to explore how political and demographic patterns are geographically distributed.
+
+## Setup
+```{r install-packages, echo=FALSE}
+# If not installed - unquote the following lines to install required packages 
+#install.packages("tidyverse")
+#install.packages("sf")
+#install.packages("tmap")
+#install.packages("leaflet")
+#install.packages("spdep")
+#install.packages("htmlwidgets")
+```
+
+
+```{r load_packages, echo=TRUE}
+#load libraries 
+library(sf)
+library(tmap)
+library(tidyverse)
+library(leaflet)
+library(spdep)
+library(htmlwidgets)
+
+tmap_mode("plot")
+```
+
+```{r create-output-folders, echo=FALSE}
+# Create folders for outputs (these are included with already saved plots and maps in the github)
+dir.create("output", showWarnings = FALSE)
+dir.create("output/maps", recursive = TRUE, showWarnings = FALSE)
+dir.create("output/figures", recursive = TRUE, showWarnings = FALSE)
+```
+
+
+# Data Acquisition and Processing
+The project combines three main datasets:
+
+  - Danish municipal population data
+  - Data on non-western immigrant populations
+  - Municipal election results for the Danish People’s Party
+
+
+```{r load-data, echo=FALSE}
+# loading number of people living in municipalities (mun_all) and number of non-western immigrants living in municipalities (mun_imm)
+mun_all <- read_csv2("data/indbyggertal_kommuner.csv") 
+mun_imm <- read_csv2("data/ikke_vestlige_indvandrere_kommuner.csv")
+
+# loading voting data for number of votes for 
+votes_df <- read_csv2("data/stemme_data.csv") # be aware that the dataset included in the data-folder have been manipulated manually to fix column names and special characters prior to loading, and will be different if downloaded as new from Danmarks Statistik. The numbers are all the same. 
+
+# load gadm spatial data 
+mun_geo <- st_read("data/gadm41_DNK_shp/gadm41_DNK_2.shp")
+
+# Fixing spellings in the spatial dataset to match the demografic and election datasets: 
+mun_geo$NAME_2[31] <- "Aarhus"
+mun_geo$NAME_2[21] <- "Høje-Taastrup"
+mun_geo$NAME_2[25] <- "København"
+
+```
+
+```{r joining immigration and overall population datasets, echo=FALSE}
+#left-join mun populations with non western immigrant populations and create new column with share of Non-Western immigrant share per municipality
+mun_pop <- mun_all %>% 
+  left_join(mun_imm, by = "Kommune") %>% 
+  dplyr::select(Kommune, indbyggertal, ikke_vestligt_indbyggertal) %>%
+  mutate("imm_share" = round((ikke_vestligt_indbyggertal)/(indbyggertal)*100, 2))
+
+# And making sure the spelling is the same
+mun_pop$Kommune[80] <- "Arhus"
+
+```
+
+
+```{r joining voting and population data into one, echo=FALSE}
+# joining population and election data
+mun_pop_votes <- votes_df %>% 
+  left_join(mun_pop, by = c( "Kommune" = "Kommune"))
+
+```
+
+
+```{r joining spatial-data with voting-data, echo=FALSE}
+# Check that the municipalities are a simple feature in projected CRS: ESPG25832
+mun_25832 <- mun_geo %>% 
+  st_as_sf() %>% 
+  st_transform(25832)
+
+# left-join with mun_pop_votes and clean
+mun_votes_geo <- mun_25832 %>% 
+  dplyr::select(NAME_2) %>%
+  left_join(mun_pop_votes, by = c(NAME_2 = "Kommune")) %>% 
+  filter(NAME_2 != "Bornholm") 
+
+# Keep only needed colums and remove NAs to make a clean dataset
+data_clean <- mun_votes_geo %>% 
+  dplyr::select(c(NAME_2, DF_share, imm_share, geometry)) %>% 
+  filter(!is.na("NAME_2")) %>% 
+  rename(municipality = NAME_2)
+
+
+# making sure DF share is numeric
+data_clean$DF_share <- as.numeric(data_clean$DF_share)
+
+```
+
+
+# Spatial Distribution of DF Support and Immigrant Populations
+
+To explore regional variation, a choropleth map were created for both DF vote share and the proportion of non-western immigrants across Danish municipalities.
+
+
+```{r create-choropleth-maps, echo=FALSE}
+# Mapping distributions of immigration and DF vote share using tmap:
+
+map_imm <- tm_shape(data_clean)+
+  tm_polygons(
+    fill = "imm_share", 
+    style = "fixed",
+    breaks = seq(0,30,5), #setting sequence to match on both maps 
+    palette = "-inferno",
+    border.col = "grey",
+    lwd = 0.5, 
+    title = "Share of NW-Immigrants(%)") +
+  
+  tm_layout(
+    main.title = "Share of Non-Western Immigrants by Municipality",
+    main.title.size = 1.3,
+    main.title.fontface = "bold",
+    legend.position = c("right", "top"),
+    legend.bg.color = "white",
+    legend.bg.alpha = 0.9,
+    legend.frame = TRUE,
+    legend.frame.lwd = 0.5,
+    
+    frame = FALSE,
+    
+    bg.color = "aliceblue"
+  )
+
+map_df <- tm_shape(data_clean) +
+  tm_polygons(
+    fill = "DF_share",
+    style = "fixed",
+    breaks = seq(0,30,5), #setting sequence to match on both maps 
+    palette = "-inferno",
+    border.col = "grey",
+    lwd = 0.5, 
+    title = "Votes for DF (%)") + 
+  
+  tm_layout(
+    main.title = "Share of Votes for DF by Municipality",
+    main.title.size = 1.3,
+    main.title.fontface = "bold",
+    legend.position = c("right", "top"),
+    legend.bg.color = "white",
+    legend.bg.alpha = 0.9,
+    legend.frame = TRUE,
+    legend.frame.lwd = 0.5,
+    
+    frame = FALSE,
+    
+    bg.color = "aliceblue"
+  )
+
+```
+
+```{r choropleth-maps, echo=FALSE}
+map_df
+map_imm
+```
+
+```{r save-maps, echo=FALSE}
+# Saving the maps to the output folder
+tmap_save(
+  map_df,
+  filename = "output/maps/df_support_map.png",
+  width = 8,
+  height = 6,
+  units = "in",
+  dpi = 300
+)
+
+tmap_save(
+  map_imm,
+  filename = "output/maps/immigrant_share_map.png",
+  width = 8,
+  height = 6,
+  units = "in",
+  dpi = 300
+)
+```
+
+
+# Statistical Relationship Between Variables
+
+To investigate whether municipalities with larger shares of non-western immigrants also display different levels of support for DF, a scatterplot and Pearson correlation analysis were conducted.
+
+```{r scatterplot, echo=FALSE}
+# Is there an association between the two variables? 
+
+#Scatterplot
+scatter_plot <- ggplot(data_clean, aes(x = imm_share, y = DF_share)) +
+  geom_point(alpha = 0.7, size = 2, color = "steelblue") +
+  geom_smooth(method = "lm", se = TRUE, color = "black") +
+  labs(
+    x = "Non-western immigrant share (%)",
+    y = "DF vote share (%)",
+    title = "Relationship between share of Non Western Immigrants and DF support") +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    panel.grid.major = element_line(color = "grey90"),
+    panel.grid.minor = element_blank()
+  )
+
+scatter_plot
+```
+
+```{r save-scatterplot, echo=FALSE}
+# Saving scatterplot to the output-folder
+ggsave(
+  filename = "output/figures/scatterplot_df_imm.png",
+  plot = scatter_plot,
+  width = 8,
+  height = 6,
+  dpi = 300
+)
+```
+
+
+```{r pearson-correlation, echo=TRUE}
+# Caltulating Pearsons correlation
+cor.test(data_clean$DF_share, data_clean$imm_share, 
+         use = "complete.obs")
+
+```
+
+# Bivariate Spatial Visualization
+
+To explore the spatial co-occurrence of DF support and immigrant share, an interactive bivariate choropleth map was created using `leaflet`.
+
+The map classifies municipalities according to both variables, allowing exploration of areas with:
+  - high DF support and low immigrant share,
+  - low DF support and high immigrant share,
+  - and mixed spatial patterns.
+
+```{r Interactive bi-variate leaflet map, echo=FALSE}
+# create classes 
+mun_bi <- data_clean %>%
+  mutate(
+    df_q = ntile(DF_share, 3),
+    imm_q = ntile(imm_share, 3)
+  )
+
+# create bi-variate categories
+mun_bi <- mun_bi %>%
+  mutate(bi_class = paste(df_q, imm_q, sep = "-"))
+
+# leaflet uses lat-long CRS, so transformed mun_bi to WGS84 (EPSG4326)
+mun_bi_ll <- st_transform(mun_bi, crs = 4326)
+
+
+# create color-palette for bivariate-map
+bi_palette <- c(
+  "1-1" = "#e8e8e8",
+  "1-2" = "#ace4e4",
+  "1-3" = "#5ac8c8",
+  "2-1" = "#dfb0d6",
+  "2-2" = "#a5add3",
+  "2-3" = "#5698b9",
+  "3-1" = "#be64ac",
+  "3-2" = "#8c62aa",
+  "3-3" = "#3b4994"
+)
+
+pal <- colorFactor(
+  palette = bi_palette,
+  domain = mun_bi_ll$bi_class
+)
+
+
+# create labels for the map-legend for interpreting the map 
+bi_labels <- c(
+  "1-1" = "1-1: Low DF / Low Immigration",
+  "1-2" = "1-2: Low DF / Medium Immigration",
+  "1-3" = "1-3: Low DF / High Immigration",
+  
+  "2-1" = "2-1: Medium DF / Low Immigration",
+  "2-2" = "2-2: Medium DF / Medium Immigration",
+  "2-3" = "2-3: Medium DF / High Immigration",
+  
+  "3-1" = "3-1: High DF / Low Immigration",
+  "3-2" = "3-2: High DF / Medium Immigration",
+  "3-3" = "3-3: High DF / High Immigration"
+)
+
+# plot interactive map with transformed mun_bi_ll, showing popups with info for each municipality 
+leaflet_map <- leaflet(mun_bi_ll) %>%
+  addTiles() %>%
+  
+  addPolygons(
+    fillColor = ~pal(bi_class),
+    color = "white",
+    weight = 1,
+    fillOpacity = 0.8,
+    
+    popup = ~paste0(
+      "<b>Municipality:</b> ", municipality, "<br>",
+      "<b>DF vote share:</b> ", DF_share, "<br>",
+      "<b>Immigrant share:</b> ", imm_share, "<br>",
+      "<b>Class:</b> ", bi_class
+    )
+  ) %>%
+  
+  # adding a custom legend with earlier defined labels 
+  addLegend(
+  pal = pal,
+  values = ~bi_class,
+  title = "DF vs Immigration",
+  
+  labFormat = function(type, cuts, p) {
+    bi_labels[cuts]
+  },
+  
+  opacity = 1
+)
+
+leaflet_map
+
+```
+
+```{r save-leaflet, echo=FALSE}
+saveWidget(
+  widget = leaflet_map,
+  file = "output/maps/bivariate_leaflet_map.html",
+  selfcontained = TRUE
+)
+```
+
+
+# Local Spatial Autocorrelation (LISA)
+
+To identify local spatial clustering of DF support, a Local Moran’s I analysis was conducted.
+
+Local Indicators of Spatial Association (LISA) identify municipalities that are surrounded by neighboring municipalities with similarly high or low values.
+
+| Cluster         | Meaning                       |
+| --------------- | ----------------------------- |
+| High–High       | high DF surrounded by high DF |
+| Low–Low         | low DF surrounded by low DF   |
+| High–Low        | outlier                       |
+| Not significant | no strong spatial clustering  |
+
+```{r lisa-map-df, echo=FALSE}
+
+#Removing NA's to ensure Local Moran I can run
+mun_clean <- data_clean %>%
+  filter(!is.na(DF_share))
+
+#Create neighbour-structure 
+nb <- poly2nb(mun_clean)
+
+# Create spatial weights 
+lw <- nb2listw(nb, style = "W", zero.policy = TRUE) 
+
+# Run Local Moran's I
+local_moran <- localmoran(
+  mun_clean$DF_share,
+  lw, zero.policy = TRUE
+)
+
+#Add results to excisting dataset
+mun_clean$Ii <- local_moran[,1]
+mun_clean$pvalue <- local_moran[,5]
+
+#Create lagged values
+mun_clean$lag_df <- lag.listw(
+  lw,
+  mun_clean$DF_share
+)
+
+#Standardize variables 
+mun_clean$z_df <- scale(mun_clean$DF_share)
+mun_clean$z_lag <- scale(mun_clean$lag_df)
+
+# Create cluster categories 
+mun_clean$cluster <- "Not significant"
+
+sig <- mun_clean$pvalue < 0.05
+
+mun_clean$cluster[
+  sig & mun_clean$z_df > 0 & mun_clean$z_lag > 0
+] <- "High-High"
+
+mun_clean$cluster[
+  sig & mun_clean$z_df < 0 & mun_clean$z_lag < 0
+] <- "Low-Low"
+
+mun_clean$cluster[
+  sig & mun_clean$z_df > 0 & mun_clean$z_lag < 0
+] <- "High-Low"
+
+mun_clean$cluster[
+  sig & mun_clean$z_df < 0 & mun_clean$z_lag > 0
+] <- "Low-High"
+
+
+# Plot a hotspot map
+lisa_df_map <- tm_shape(mun_clean) +
+  tm_polygons(
+    fill = "cluster",
+      palette = c(
+        "red",        # High-High
+        "pink",       # Low-High
+        "blue",       # Low-Low
+        "lightblue",  # Not significant
+        "grey85"      # Not significant
+    ),
+    title = "Cluster Types",
+    border.col = "white",
+    lwd = 0.5) +
+    tm_layout(
+      main.title = "LISA Cluster Map of DF Votes Share",
+      main.title.size = 1.2,
+    
+      legend.position = c("right", "top"),
+      legend.bg.color = "white",
+      legend.bg.alpha = 0.5,
+    
+      frame = FALSE
+   )
+
+lisa_df_map
+```
+
+```{r save-df-lisa-map, echo=FALSE}
+# Save the map to the output folder
+tmap_save(
+  lisa_df_map,
+  filename = "output/maps/lisa_df_map.png",
+  width = 8,
+  height = 6,
+  dpi = 300
+)
+```
+
+```{r lisa-map-imm, echo=FALSE}
+# Doing the same thing for the immigration map: 
+#Removing NA's to ensure Local Moran I can run
+mun_clean <- data_clean %>%
+  filter(!is.na(imm_share))
+
+#Create neighbour-structure 
+nb <- poly2nb(mun_clean)
+
+# Create spatial weights 
+lw <- nb2listw(nb, style = "W", zero.policy = TRUE) 
+
+# Run Local Moran's I
+local_moran <- localmoran(
+  mun_clean$imm_share,
+  lw, zero.policy = TRUE
+)
+
+#Add results to excisting dataset
+mun_clean$Ii <- local_moran[,1]
+mun_clean$pvalue <- local_moran[,5]
+
+#Create lagged values
+mun_clean$lag_imm <- lag.listw(
+  lw,
+  mun_clean$imm_share
+)
+
+#Standardize variables 
+mun_clean$z_imm <- scale(mun_clean$imm_share)
+mun_clean$z_lag <- scale(mun_clean$lag_imm)
+
+# Create cluster categories 
+mun_clean$cluster <- "Not significant"
+
+sig <- mun_clean$pvalue < 0.05
+
+mun_clean$cluster[
+  sig & mun_clean$z_imm > 0 & mun_clean$z_lag > 0
+] <- "High-High"
+
+mun_clean$cluster[
+  sig & mun_clean$z_imm < 0 & mun_clean$z_lag < 0
+] <- "Low-Low"
+
+mun_clean$cluster[
+  sig & mun_clean$z_imm > 0 & mun_clean$z_lag < 0
+] <- "High-Low"
+
+mun_clean$cluster[
+  sig & mun_clean$z_imm < 0 & mun_clean$z_lag > 0
+] <- "Low-High"
+
+
+# Plot a hotspot map
+lisa_imm_map <- tm_shape(mun_clean) +
+  tm_polygons(
+    fill = "cluster",
+      palette = c(
+        "red",        # High-High
+        "pink",       # Low-High
+        "lightblue",  # Not significant
+        "grey85"      # Not significant
+    ),
+    title = "Cluster Type",
+    border.col = "white",
+    lwd = 0.5) +
+    tm_layout(
+      main.title = "LISA Cluster Map of Non-Western Immigrant Share",
+      main.title.size = 1.2,
+    
+      legend.position = c("right","top"),
+      legend.bg.color = "white",
+      legend.bg.alpha = 0.5,
+    
+      frame = FALSE
+   )
+
+
+lisa_imm_map
+```
+```{r save-lisa-map-imm, echo=FALSE}
+#Saving to the output folder
+tmap_save(
+  lisa_imm_map,
+  filename = "output/maps/lisa_imm_map.png",
+  width = 8,
+  height = 6,
+  dpi = 300
+)
+
+```
